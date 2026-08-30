@@ -22,8 +22,8 @@ data class CaptureSettings(
      */
     val iso: Int? = null,
 
-    /** Shutter, in nanoseconds. Null runs auto-exposure. */
-    val exposureTimeNs: Long? = 20_000_000L,
+    /** Shutter, in nanoseconds. Null runs auto-exposure, which is the default. */
+    val exposureTimeNs: Long? = null,
 
     /** Focus in diopters (1/metres). Null runs continuous autofocus. 0 is infinity. */
     val focusDiopters: Float? = null,
@@ -31,10 +31,11 @@ data class CaptureSettings(
     /**
      * White balance as a colour temperature in Kelvin, or null to hand it back to the camera.
      *
-     * Fixed by default: auto white balance drifting mid-take is unfixable in the grade, because
-     * every frame would need a different correction.
+     * Auto by default, so the app is usable without setting anything up first. Worth pinning
+     * before a real take: auto white balance that drifts mid-shot cannot be fixed in the grade,
+     * because every frame would need a different correction.
      */
-    val kelvin: Int? = 5500,
+    val kelvin: Int? = null,
 
     /** Green against magenta, -1..1. The axis a colour temperature cannot express. */
     val tint: Float = 0f,

@@ -7,6 +7,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -118,14 +121,14 @@ fun CameraScreen(viewModel: CameraViewModel) {
 
     // Reserved so the picture is never hidden behind the deck. Measured rather than guessed would be
     // better, but a fixed reserve keeps the viewfinder from resizing every time a tool opens.
-    val deckHeight = if (panel == Panel.NONE) 168.dp else 268.dp
+    val deckHeight = if (panel == Panel.NONE) 74.dp else 194.dp
 
     val viewfinder = @Composable { modifier: Modifier ->
         Box(modifier) {
             Viewfinder(viewModel, state, landscape)
             StatusOverlay(
                 state,
-                Modifier.align(Alignment.TopStart).statusBarsPadding().padding(12.dp),
+                Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 8.dp),
             )
         }
     }
@@ -161,6 +164,23 @@ fun CameraScreen(viewModel: CameraViewModel) {
                 Modifier.align(Alignment.CenterEnd).width(DECK_WIDTH).fillMaxHeight()
             } else {
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+            },
+        )
+
+        // Floated over the picture rather than given a band of its own, which was costing about
+        // 90dp of viewfinder. Nothing worth framing sits dead centre at the very bottom.
+        //
+        // The deck also carries the navigation bar inset, so that has to be added here or the
+        // button sits half on the picture and half on the deck.
+        val navBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        RecordButton(
+            recording = state.recording,
+            enabled = !state.recordingTransitioning,
+            onClick = viewModel::toggleRecording,
+            modifier = if (landscape) {
+                Modifier.align(Alignment.CenterEnd).padding(end = DECK_WIDTH + 24.dp)
+            } else {
+                Modifier.align(Alignment.BottomCenter).padding(bottom = deckHeight + navBar + 20.dp)
             },
         )
     }
@@ -199,11 +219,15 @@ private fun Viewfinder(viewModel: CameraViewModel, state: CameraUiState, landsca
 
 @Composable
 private fun StatusOverlay(state: CameraUiState, modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(
+        modifier,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         val iso = state.reportedIso?.toString() ?: "—"
         val shutter = state.reportedExposureNs
             ?.let { "1/${(1_000_000_000.0 / it).roundToInt()}" } ?: "—"
-        Mono("ISO $iso   ${shutter}   ${state.settings.profile.label}")
+        Pill("ISO $iso   ${shutter}   ${state.settings.profile.label}")
 
         if (state.recording) {
             val seconds = state.elapsedMs / 1000
@@ -216,18 +240,32 @@ private fun StatusOverlay(state: CameraUiState, modifier: Modifier) {
     }
 }
 
+/**
+ * Floating readout, matching Lutty's scrubber pill.
+ *
+ * Translucent and fully rounded rather than a hard black box: the overlay sits on the picture, so
+ * it should read as glass over the image rather than a panel punched into it.
+ */
 @Composable
-private fun Mono(text: String, color: Color = Color.White, modifier: Modifier = Modifier) {
-    Text(
-        text = text,
-        color = color,
-        fontFamily = FontFamily.Monospace,
-        fontSize = 12.sp,
-        modifier = modifier
-            .background(Color(0xCC000000), RoundedCornerShape(6.dp))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-    )
+private fun Pill(text: String, color: Color = Color.White, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = CircleShape,
+        color = Color.Black.copy(alpha = 0.55f),
+    ) {
+        Text(
+            text = text,
+            color = color,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+        )
+    }
 }
+
+@Composable
+private fun Mono(text: String, color: Color = Color.White, modifier: Modifier = Modifier) =
+    Pill(text, color, modifier)
 
 @Composable
 private fun ControlDeck(
@@ -257,28 +295,14 @@ private fun ControlDeck(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(if (landscape) 132.dp else 100.dp)
-                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                        .height(if (landscape) 156.dp else 120.dp)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                 ) {
                     PanelBody(panel, state, viewModel, onPickLut)
                 }
             }
 
             TabRow(state, panel, onPanel, landscape)
-
-            run {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RecordButton(
-                        recording = state.recording,
-                        enabled = !state.recordingTransitioning,
-                        onClick = viewModel::toggleRecording,
-                    )
-                }
-            }
         }
     }
 }
@@ -310,8 +334,8 @@ private fun TabRow(
     // Lutty's tool rail: a plain icon over its current value, with selection shown by tint alone.
     // Pills and filled circles add shapes that compete with the picture for attention.
     androidx.compose.foundation.layout.FlowRow(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterHorizontally),
         maxItemsInEachRow = if (landscape) 3 else 9,
     ) {
         tabs.forEach { (id, icon, label) ->
@@ -321,7 +345,7 @@ private fun TabRow(
             Column(
                 Modifier
                     .then(if (landscape) Modifier.width(104.dp) else Modifier.weight(1f))
-                    .padding(vertical = if (landscape) 12.dp else 8.dp)
+                    .padding(vertical = if (landscape) 12.dp else 6.dp)
                     .pointerInput(id) { detectTapGestures { onPanel(id) } },
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
@@ -329,15 +353,20 @@ private fun TabRow(
                     icon,
                     contentDescription = label,
                     tint = tint,
-                    modifier = Modifier.size(if (landscape) 34.dp else 30.dp),
+                    modifier = Modifier.size(if (landscape) 34.dp else 26.dp),
                 )
-                Spacer(Modifier.height(5.dp))
+                Spacer(Modifier.height(4.dp))
+                // Nine tabs across a phone leave roughly 47dp each, so the label has to be told
+                // what to do when it does not fit. Without this it ran under its neighbours.
                 Text(
                     label,
                     maxLines = 1,
                     softWrap = false,
-                    style = MaterialTheme.typography.labelMedium,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    style = MaterialTheme.typography.labelSmall,
                     color = tint,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
@@ -485,7 +514,7 @@ private fun PanelBody(
             range = 0f..10f,
         ) { v -> viewModel.update { it.copy(focusDiopters = v) } }
 
-        Panel.WB -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Panel.WB -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             AutoSlider(
                 label = "White balance",
                 readout = settings.whiteBalanceLabel,
@@ -591,17 +620,26 @@ private fun AutoSlider(
 ) {
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+            Text(label, style = MaterialTheme.typography.labelLarge)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                readout,
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.labelLarge,
+                color = if (isAuto) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurface,
+            )
             // Auto and manual are not two ends of one scale, so the automatic state gets its own
-            // control rather than being smuggled in as the minimum value.
+            // control rather than being smuggled in as the minimum value. It sits last because it
+            // is an action, while the value belongs beside the thing it describes.
             FilterChip(
                 selected = isAuto,
                 onClick = onToggleAuto,
                 label = { Text("AUTO", style = MaterialTheme.typography.labelSmall) },
+                modifier = Modifier.height(30.dp),
             )
-            Spacer(Modifier.width(8.dp))
-            Text(readout, style = MaterialTheme.typography.labelLarge)
         }
+        Spacer(Modifier.height(2.dp))
         SlimSlider(value = value, range = range, onChange = { if (!isAuto) onChange(it) })
     }
 }
@@ -615,7 +653,7 @@ private fun RecordButton(
 ) {
     Box(
         modifier
-            .size(72.dp)
+            .size(62.dp)
             .background(Color.Transparent, CircleShape)
             .pointerInput(enabled) {
                 if (enabled) detectTapGestures { onClick() }
@@ -623,11 +661,11 @@ private fun RecordButton(
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            drawCircle(Color.White, radius = size.minDimension / 2, style = Stroke(4f))
+            drawCircle(Color.White, radius = size.minDimension / 2 - 2f, style = Stroke(3f))
         }
         Box(
             Modifier
-                .size(if (recording) 28.dp else 56.dp)
+                .size(if (recording) 24.dp else 48.dp)
                 .background(
                     Color(0xFFFF4438),
                     if (recording) RoundedCornerShape(6.dp) else CircleShape,
@@ -645,17 +683,21 @@ private fun AutoManualSlider(
     Row(verticalAlignment = Alignment.CenterVertically) {
         // Auto and manual are not two ends of one scale, so the null state gets its own control
         // rather than being smuggled in as the minimum value.
+        //
+        // A chip plus a full Material slider is wider than the deck, which pushed the right end of
+        // the track off screen. The chip is compact and the slider is the hairline one, matching
+        // the rest of the app.
         FilterChip(
             selected = value == null,
             onClick = { onChange(if (value == null) range.start else null) },
-            label = { Text("AUTO", fontSize = 11.sp) },
+            label = { Text("AUTO", style = MaterialTheme.typography.labelSmall) },
+            modifier = Modifier.height(30.dp),
         )
-        Spacer(Modifier.width(12.dp))
-        Slider(
+        Spacer(Modifier.width(10.dp))
+        SlimSlider(
             value = value ?: range.start,
-            valueRange = range,
-            enabled = value != null,
-            onValueChange = { onChange(it) },
+            range = range,
+            onChange = { onChange(it) },
             modifier = Modifier.weight(1f),
         )
     }
