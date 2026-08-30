@@ -52,6 +52,7 @@ class MonitorRenderer(
 
     private val transform = FloatArray(16)
     private val rotation = FloatArray(16)
+    private val textureRotation = FloatArray(16)
     private val combined = FloatArray(16)
 
     /**
@@ -64,6 +65,8 @@ class MonitorRenderer(
      */
     @Volatile
     var rotationDegrees: Int = 0
+    @Volatile
+    var displayRotationDegrees: Int = 0
     private lateinit var vertices: FloatBuffer
 
     @Volatile
@@ -156,16 +159,20 @@ class MonitorRenderer(
      * ends up stretching or cropping.
      */
     private fun fitScale(): FloatArray {
-        val rotated = rotationDegrees % 180 != 0
-        val contentAspect =
-            if (rotated) PREVIEW_HEIGHT.toFloat() / PREVIEW_WIDTH
-            else PREVIEW_WIDTH.toFloat() / PREVIEW_HEIGHT
+        val contentAspect = PREVIEW_WIDTH.toFloat() / PREVIEW_HEIGHT
         val viewAspect = viewWidth.toFloat() / viewHeight
-        return if (contentAspect > viewAspect) {
-            floatArrayOf(1f, viewAspect / contentAspect)
+        // Fit the image after rotation, then invert the two axes because the vertex quad is
+        // rotated after this scale is applied.
+        val displayedAspect =
+            if (rotationDegrees % 180 != 0) 1f / contentAspect else contentAspect
+        val displayed = if (displayedAspect > viewAspect) {
+            floatArrayOf(1f, viewAspect / displayedAspect)
         } else {
-            floatArrayOf(contentAspect / viewAspect, 1f)
+            floatArrayOf(displayedAspect / viewAspect, 1f)
         }
+        return if (rotationDegrees % 180 != 0) {
+            floatArrayOf(displayed[1], displayed[0])
+        } else displayed
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -173,13 +180,21 @@ class MonitorRenderer(
         texture.updateTexImage()
         texture.getTransformMatrix(transform)
 
-        // Rotate about the middle of the texture, then apply the SurfaceTexture's own transform.
+        // Keep the camera texture in its native 16:9 coordinates and rotate the displayed quad.
+        // Rotating UVs leaves the quad landscape-shaped and compresses it when the view is
+        // portrait; rotating geometry swaps the fitted dimensions without distorting the frame.
         android.opengl.Matrix.setIdentityM(rotation, 0)
-        android.opengl.Matrix.translateM(rotation, 0, 0.5f, 0.5f, 0f)
-        // Negative: rotating the texture coordinates one way turns the sampled image the other.
+        // GL's positive angle is counter-clockwise, while the back-camera correction is expressed
+        // clockwise from the user's point of view.
         android.opengl.Matrix.rotateM(rotation, 0, -rotationDegrees.toFloat(), 0f, 0f, 1f)
-        android.opengl.Matrix.translateM(rotation, 0, -0.5f, -0.5f, 0f)
-        android.opengl.Matrix.multiplyMM(combined, 0, transform, 0, rotation, 0)
+        android.opengl.Matrix.setIdentityM(textureRotation, 0)
+        android.opengl.Matrix.translateM(textureRotation, 0, 0.5f, 0.5f, 0f)
+        android.opengl.Matrix.rotateM(
+            textureRotation, 0,
+            (rotationDegrees + displayRotationDegrees).toFloat(), 0f, 0f, 1f,
+        )
+        android.opengl.Matrix.translateM(textureRotation, 0, -0.5f, -0.5f, 0f)
+        android.opengl.Matrix.multiplyMM(combined, 0, textureRotation, 0, transform, 0)
 
         pendingLut?.let { uploadLut(it); pendingLut = null }
 
@@ -197,6 +212,9 @@ class MonitorRenderer(
 
         GLES20.glUniformMatrix4fv(
             GLES20.glGetUniformLocation(program, "uTransform"), 1, false, combined, 0,
+        )
+        GLES20.glUniformMatrix4fv(
+            GLES20.glGetUniformLocation(program, "uRotation"), 1, false, rotation, 0,
         )
         GLES20.glUniform1i(
             GLES20.glGetUniformLocation(program, "uLutEnabled"),
@@ -312,10 +330,11 @@ class MonitorRenderer(
             #version 300 es
             in vec4 aPosition;
             uniform mat4 uTransform;
+            uniform mat4 uRotation;
             uniform vec2 uFit;
             out vec2 vTex;
             void main() {
-              gl_Position = vec4(aPosition.xy * uFit, 0.0, 1.0);
+              gl_Position = uRotation * vec4(aPosition.xy * uFit, 0.0, 1.0);
               vTex = (uTransform * vec4(aPosition.zw, 0.0, 1.0)).xy;
             }
         """.trimIndent()

@@ -22,12 +22,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicReference
 
 /** Everything the camera screen renders. */
 data class CameraUiState(
     val capabilities: CameraCapabilities? = null,
     val settings: CaptureSettings = CaptureSettings(),
     val recording: Boolean = false,
+    val recordingTransitioning: Boolean = false,
     val elapsedMs: Long = 0,
     val lastSaved: String? = null,
     val error: String? = null,
@@ -80,6 +82,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     private var recorder: HevcRecorder? = null
     private var output: VideoOutput? = null
     private var previewSurface: Surface? = null
+    private val recordingPhase = AtomicReference(RecordingPhase.IDLE)
 
     /**
      * Renders the preview through an optional monitoring LUT.
@@ -111,7 +114,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         val existing = session
         if (existing != null) {
             previewSurface = preview
-            existing.configure(preview, null, _state.value.settings, {}, ::fail)
+            val recordSurface = when (recordingPhase.get()) {
+                RecordingPhase.STARTING, RecordingPhase.RECORDING ->
+                    recorder?.inputSurface ?: return
+                RecordingPhase.STOPPING -> return
+                RecordingPhase.IDLE -> null
+            }
+            existing.configure(preview, recordSurface, _state.value.settings, {}, ::fail)
             return
         }
 
@@ -296,14 +305,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Recomputes how far the preview must be turned to look upright.
      *
-     * Must be called whenever the device rotates: the sensor is fixed to the body, so the correction
-     * depends on the current display rotation, not on which way up the phone was when the camera
-     * opened.
+     * Display.getRotation() is counter-clockwise from the user's point of view. For the back
+     * camera that direction is reversed when mapping the sensor buffer to the screen, so the two
+     * clockwise rotations add. This is Android's Camera2 relative-rotation formula with sign=-1.
      */
     fun refreshRotation(displayRotationDegrees: Int) {
         displayRotation = displayRotationDegrees
+        monitor.displayRotationDegrees = displayRotationDegrees
         val sensor = _state.value.capabilities?.sensorOrientation ?: return
-        monitor.rotationDegrees = (sensor - displayRotationDegrees + 360) % 360
+        monitor.rotationDegrees = (sensor + displayRotationDegrees) % 360
     }
 
     /**
@@ -317,19 +327,31 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     private var displayRotation: Int = 0
 
     fun toggleRecording() {
-        if (_state.value.recording) stopRecording() else startRecording()
+        when (recordingPhase.get()) {
+            RecordingPhase.IDLE -> startRecording()
+            RecordingPhase.RECORDING -> stopRecording()
+            RecordingPhase.STARTING, RecordingPhase.STOPPING -> Unit
+        }
     }
 
     private fun startRecording() {
         val capabilities = _state.value.capabilities ?: return
-        val preview = previewSurface ?: return
+        if (session == null) return
+        if (!recordingPhase.compareAndSet(RecordingPhase.IDLE, RecordingPhase.STARTING)) return
+        if (previewSurface == null) {
+            recordingPhase.set(RecordingPhase.IDLE)
+            return
+        }
         val settings = _state.value.settings
         val size = _state.value.recordSize
+        _state.update { it.copy(recordingTransitioning = true, error = null) }
 
         viewModelScope.launch(Dispatchers.IO) {
+            var destination: VideoOutput? = null
+            var encoder: HevcRecorder? = null
             try {
-                val destination = VideoOutput.create(getApplication(), settings.profile)
-                val encoder = HevcRecorder(
+                destination = VideoOutput.create(getApplication(), settings.profile)
+                encoder = HevcRecorder(
                     width = size.width,
                     height = size.height,
                     frameRate = CameraSession.FRAME_RATE,
@@ -344,33 +366,74 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                 recorder = encoder
 
                 withContext(Dispatchers.Main) {
-                    session?.configure(
+                    val preview = previewSurface
+                    val camera = session
+                    if (preview == null || camera == null) {
+                        recordingPhase.set(RecordingPhase.IDLE)
+                        encoder.stop()
+                        destination.abandon()
+                        recorder = null
+                        output = null
+                        _state.update { it.copy(recordingTransitioning = false) }
+                        return@withContext
+                    }
+                    camera.configure(
                         preview = preview,
                         record = encoder.inputSurface,
                         settings = settings,
                         onReady = {
-                            encoder.start()
-                            _state.update { it.copy(recording = true, error = null) }
+                            if (recordingPhase.compareAndSet(
+                                    RecordingPhase.STARTING,
+                                    RecordingPhase.RECORDING,
+                                )
+                            ) {
+                                encoder.start()
+                                _state.update {
+                                    it.copy(
+                                        recording = true,
+                                        recordingTransitioning = false,
+                                        error = null,
+                                    )
+                                }
+                            }
                         },
                         onError = { message ->
+                            if (!recordingPhase.compareAndSet(
+                                    RecordingPhase.STARTING,
+                                    RecordingPhase.IDLE,
+                                )
+                            ) return@configure
+                            encoder.stop()
                             destination.abandon()
-                            recorder = null
-                            output = null
+                            if (recorder === encoder) recorder = null
+                            if (output === destination) output = null
+                            _state.update { it.copy(recordingTransitioning = false) }
                             fail(message)
                         },
                     )
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "could not start recording", t)
+                encoder?.stop()
+                destination?.abandon()
+                if (recorder === encoder) recorder = null
+                if (output === destination) output = null
+                recordingPhase.compareAndSet(RecordingPhase.STARTING, RecordingPhase.IDLE)
+                _state.update { it.copy(recordingTransitioning = false) }
                 fail("could not start recording: ${t.message}")
             }
         }
     }
 
     private fun stopRecording() {
-        val encoder = recorder ?: return
+        if (!recordingPhase.compareAndSet(RecordingPhase.RECORDING, RecordingPhase.STOPPING)) return
+        val encoder = recorder ?: run {
+            recordingPhase.set(RecordingPhase.IDLE)
+            _state.update { it.copy(recording = false, recordingTransitioning = false) }
+            return
+        }
         val destination = output
-        _state.update { it.copy(recording = false) }
+        _state.update { it.copy(recording = false, recordingTransitioning = true) }
 
         viewModelScope.launch(Dispatchers.IO) {
             encoder.stop()
@@ -379,8 +442,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
             // put an unplayable file in the gallery.
             if (frames > 0) destination?.commit() else destination?.abandon()
 
-            recorder = null
-            output = null
+            if (recorder === encoder) recorder = null
+            if (output === destination) output = null
+            recordingPhase.set(RecordingPhase.IDLE)
 
             _state.update {
                 it.copy(
@@ -388,6 +452,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                     else null,
                     error = if (frames > 0) null else "recording produced no frames",
                     elapsedMs = 0,
+                    recordingTransitioning = false,
                 )
             }
 
@@ -408,7 +473,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
      * produces a file that plays back on its side.
      */
     private fun orientationHint(sensorOrientation: Int): Int =
-        (sensorOrientation - displayRotation + 360) % 360
+        (sensorOrientation + displayRotation) % 360
 
     private fun fail(message: String) {
         Log.e(TAG, message)
@@ -416,6 +481,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        recordingPhase.set(RecordingPhase.STOPPING)
         recorder?.stop()
         output?.abandon()
         session?.close()
@@ -426,4 +492,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         private const val TAG = "CameraViewModel"
         private const val SEED_DELAY_MS = 1200L
     }
+
+    private enum class RecordingPhase { IDLE, STARTING, RECORDING, STOPPING }
 }

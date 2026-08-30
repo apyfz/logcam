@@ -32,6 +32,8 @@ class HevcRecorder(
 
     private var track = -1
     private val stopping = AtomicBoolean(false)
+    private val started = AtomicBoolean(false)
+    private val cleanedUp = AtomicBoolean(false)
     private val finished = CountDownLatch(1)
 
     /** The surface the camera renders into. Valid between [prepare] and the end of [stop]. */
@@ -92,7 +94,9 @@ class HevcRecorder(
     }
 
     fun start() {
+        check(!started.get()) { "recorder already started" }
         codec.start()
+        started.set(true)
         audio?.start()
         Thread(::drainLoop, "hevc-drain").start()
     }
@@ -106,6 +110,10 @@ class HevcRecorder(
      */
     fun stop() {
         if (!stopping.compareAndSet(false, true)) return
+        if (!started.get()) {
+            cleanUp()
+            return
+        }
         audio?.stop()
         runCatching { codec.signalEndOfInputStream() }
         if (!finished.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
@@ -143,6 +151,7 @@ class HevcRecorder(
     }
 
     private fun cleanUp() {
+        if (!cleanedUp.compareAndSet(false, true)) return
         runCatching { codec.stop() }
         runCatching { codec.release() }
         gate.release()

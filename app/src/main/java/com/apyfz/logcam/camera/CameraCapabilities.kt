@@ -4,6 +4,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.params.DynamicRangeProfiles
+import android.os.Build
 import android.util.Range
 import android.util.Size
 
@@ -71,8 +72,15 @@ data class CameraCapabilities(
                     ?.toSet().orEmpty()
             val tonemapModes =
                 c.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES)?.toSet().orEmpty()
-            val colorModes =
-                c.get(CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_MODES)?.toSet().orEmpty()
+            val supportsColorTransform =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+                    c.get(CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_MODES)
+                        ?.contains(CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX) == true
+                } else {
+                    // Before API 36 there is no available-modes key. MANUAL_POST_PROCESSING is the
+                    // Camera2 contract that guarantees manual colour-correction controls.
+                    CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING in caps
+                }
 
             val profiles = c.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)
             val tenBit = profiles?.supportedProfiles
@@ -100,8 +108,7 @@ data class CameraCapabilities(
                 maxCurvePoints = usableCurvePoints(
                     c.get(CameraCharacteristics.TONEMAP_MAX_CURVE_POINTS) ?: 0,
                 ),
-                supportsColorTransform =
-                    CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX in colorModes,
+                supportsColorTransform = supportsColorTransform,
                 tenBitProfiles = tenBit,
                 recommendedTenBitProfile =
                     c.get(CameraCharacteristics.REQUEST_RECOMMENDED_TEN_BIT_DYNAMIC_RANGE_PROFILE),

@@ -2,6 +2,7 @@ package com.apyfz.logcam.color
 
 import java.io.BufferedReader
 import java.io.InputStream
+import java.util.Locale
 
 sealed interface CubeResult {
     data class Ok(val lut: LutData) : CubeResult
@@ -41,10 +42,10 @@ object CubeParser {
             val line = raw.substringBefore('#').trim()
             if (line.isEmpty()) continue
 
-            val upper = line.uppercase()
+            val upper = line.uppercase(Locale.ROOT)
             when {
                 upper.startsWith("TITLE") -> {
-                    title = line.substringAfter("TITLE").trim().trim('"')
+                    title = line.drop("TITLE".length).trim().trim('"')
                     continue
                 }
                 upper.startsWith("LUT_3D_SIZE") || upper.startsWith("LUT_1D_SIZE") -> {
@@ -52,7 +53,12 @@ object CubeParser {
                     oneDimensional = upper.startsWith("LUT_1D_SIZE")
                     val n = line.split(Regex("\\s+")).getOrNull(1)?.toIntOrNull()
                         ?: return CubeResult.Error("malformed LUT size", lineNo)
-                    if (n < 2 || n > 256) return CubeResult.Error("LUT size $n out of range 2..256", lineNo)
+                    if (n < 2 || n > MAX_GPU_LUT_SIZE) {
+                        return CubeResult.Error(
+                            "LUT size $n out of range 2..$MAX_GPU_LUT_SIZE",
+                            lineNo,
+                        )
+                    }
                     size = n
                     val count = if (oneDimensional) n else n * n * n
                     data = FloatArray(count * 3)
@@ -128,4 +134,7 @@ object CubeParser {
         // a trailing token means this is not a clean triplet; the keyword rows are handled above
         return if (i < n && !line.substring(i).all { it.isWhitespace() }) null else out
     }
+
+    /** Keeps the parsed array, GL upload buffer, and GPU texture within a practical phone budget. */
+    private const val MAX_GPU_LUT_SIZE = 65
 }

@@ -86,17 +86,34 @@ fun CameraScreen(viewModel: CameraViewModel) {
     val landscape = androidx.compose.ui.platform.LocalConfiguration.current.orientation ==
         android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
-    // The sensor does not turn with the phone, so the preview's correction has to be recomputed
-    // every time the display orientation changes.
+    // The sensor does not turn with the phone, so the preview's correction follows the actual
+    // display rotation. Configuration.orientation only distinguishes portrait from landscape and
+    // misses 0↔180 and 90↔270 changes.
     val view = androidx.compose.ui.platform.LocalView.current
-    androidx.compose.runtime.LaunchedEffect(landscape) {
-        val degrees = when (view.display?.rotation) {
-            android.view.Surface.ROTATION_90 -> 90
-            android.view.Surface.ROTATION_180 -> 180
-            android.view.Surface.ROTATION_270 -> 270
-            else -> 0
+    val context = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.DisposableEffect(view, viewModel) {
+        fun refreshRotation() {
+            val degrees = when (view.display?.rotation) {
+                android.view.Surface.ROTATION_90 -> 90
+                android.view.Surface.ROTATION_180 -> 180
+                android.view.Surface.ROTATION_270 -> 270
+                else -> 0
+            }
+            viewModel.refreshRotation(degrees)
         }
-        viewModel.refreshRotation(degrees)
+
+        val displayManager = context.getSystemService(android.content.Context.DISPLAY_SERVICE)
+            as android.hardware.display.DisplayManager
+        val listener = object : android.hardware.display.DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) = Unit
+            override fun onDisplayChanged(displayId: Int) {
+                if (displayId == view.display?.displayId) refreshRotation()
+            }
+        }
+        refreshRotation()
+        displayManager.registerDisplayListener(listener, null)
+        onDispose { displayManager.unregisterDisplayListener(listener) }
     }
 
     // Reserved so the picture is never hidden behind the deck. Measured rather than guessed would be
@@ -255,7 +272,11 @@ private fun ControlDeck(
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    RecordButton(state.recording, viewModel::toggleRecording)
+                    RecordButton(
+                        recording = state.recording,
+                        enabled = !state.recordingTransitioning,
+                        onClick = viewModel::toggleRecording,
+                    )
                 }
             }
         }
@@ -586,12 +607,19 @@ private fun AutoSlider(
 }
 
 @Composable
-private fun RecordButton(recording: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun RecordButton(
+    recording: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Box(
         modifier
             .size(72.dp)
             .background(Color.Transparent, CircleShape)
-            .pointerInput(Unit) { detectTapGestures { onClick() } },
+            .pointerInput(enabled) {
+                if (enabled) detectTapGestures { onClick() }
+            },
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxSize()) {
