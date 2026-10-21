@@ -38,6 +38,9 @@ data class CameraCapabilities(
     val exposureStep: Double,
     val activeArray: android.graphics.Rect?,
     val maxMeteringRegions: Int,
+    val maxFocusRegions: Int,
+    val autoFocusModes: Set<Int>,
+    val preCorrectionArray: android.graphics.Rect?,
     /** Sensor XYZ-to-camera matrices at its two reference illuminants, row-major. */
     val colorTransformD65: DoubleArray?,
     val colorTransformStdA: DoubleArray?,
@@ -123,6 +126,9 @@ data class CameraCapabilities(
                     ?.let { it.numerator.toDouble() / it.denominator } ?: 0.0,
                 activeArray = c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE),
                 maxMeteringRegions = c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0,
+                maxFocusRegions = c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0,
+                autoFocusModes = c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toSet().orEmpty(),
+                preCorrectionArray = c.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE),
                 colorTransformD65 = c.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1)?.toMatrix(),
                 colorTransformStdA = c.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM2)?.toMatrix(),
             )

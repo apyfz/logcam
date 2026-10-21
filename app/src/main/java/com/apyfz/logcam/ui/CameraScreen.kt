@@ -1,20 +1,22 @@
 package com.apyfz.logcam.ui
 
-import android.view.SurfaceHolder
-import android.view.SurfaceView
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,39 +30,26 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.CenterFocusWeak
 import androidx.compose.material.icons.filled.Exposure
-import androidx.compose.material.icons.filled.HighQuality
-import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.apyfz.logcam.camera.CaptureSettings
 import com.apyfz.logcam.camera.RecordingProfile
 import com.apyfz.logcam.color.WhiteBalanceMath
 import kotlin.math.ln
@@ -68,10 +57,8 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * Portrait viewfinder with a bottom control deck.
- *
- * The controls are one panel at a time rather than a long scroll: shooting is a one-handed activity
- * and a list that has to be scrolled past the record button is a list that gets used with two hands.
+ * A stable viewfinder with a measured bottom deck in portrait and a compact side deck in landscape.
+ * Recording and tool selection stay visible while the selected tool scrolls independently.
  */
 @Composable
 fun CameraScreen(viewModel: CameraViewModel) {
@@ -119,9 +106,8 @@ fun CameraScreen(viewModel: CameraViewModel) {
         onDispose { displayManager.unregisterDisplayListener(listener) }
     }
 
-    // Reserved so the picture is never hidden behind the deck. Measured rather than guessed would be
-    // better, but a fixed reserve keeps the viewfinder from resizing every time a tool opens.
-    val deckHeight = if (panel == Panel.NONE) 74.dp else 194.dp
+    val density = LocalDensity.current
+    var deckHeight by remember { mutableStateOf(200.dp) }
 
     val viewfinder = @Composable { modifier: Modifier ->
         Box(modifier) {
@@ -144,12 +130,8 @@ fun CameraScreen(viewModel: CameraViewModel) {
         )
     }
 
-    // One layout for both orientations, differing only by modifiers.
-    //
-    // Branching into a Row for landscape and a Column for portrait puts the GLSurfaceView in a
-    // different place in the composition, so rotating destroys and rebuilds it. The camera carries
-    // on rendering into the dead SurfaceTexture — a black preview — and each rotation leaks another
-    // one until the app dies.
+    // Keep the GLSurfaceView in the same composition slot across rotations so its camera
+    // surface survives. Only the deck placement and viewfinder padding change.
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         viewfinder(
             Modifier
@@ -163,30 +145,17 @@ fun CameraScreen(viewModel: CameraViewModel) {
             if (landscape) {
                 Modifier.align(Alignment.CenterEnd).width(DECK_WIDTH).fillMaxHeight()
             } else {
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged {
+                    deckHeight = with(density) { it.height.toDp() }
+                }
             },
         )
 
-        // Floated over the picture rather than given a band of its own, which was costing about
-        // 90dp of viewfinder. Nothing worth framing sits dead centre at the very bottom.
-        //
-        // The deck also carries the navigation bar inset, so that has to be added here or the
-        // button sits half on the picture and half on the deck.
-        val navBar = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-        RecordButton(
-            recording = state.recording,
-            enabled = !state.recordingTransitioning,
-            onClick = viewModel::toggleRecording,
-            modifier = if (landscape) {
-                Modifier.align(Alignment.CenterEnd).padding(end = DECK_WIDTH + 24.dp)
-            } else {
-                Modifier.align(Alignment.BottomCenter).padding(bottom = deckHeight + navBar + 20.dp)
-            },
-        )
+
     }
 }
 
-private val DECK_WIDTH = 360.dp
+private val DECK_WIDTH = 280.dp
 
 private enum class Panel { NONE, PROFILE, LENS, EXPOSURE, ISO, SHUTTER, FOCUS, WB, LUT, QUALITY }
 
@@ -207,7 +176,9 @@ private fun Viewfinder(viewModel: CameraViewModel, state: CameraUiState, landsca
             },
         )
 
-        if (state.settings.exposureCompensation != 0) {
+        TouchFocusOverlay(viewModel, state)
+
+        if (state.settings.exposureCompensation != 0 && state.settings.autoExposure) {
             Mono(
                 "EV %+.1f".format(java.util.Locale.US, state.exposureEv),
                 Color(0xFFFFD24A),
@@ -236,7 +207,12 @@ private fun StatusOverlay(state: CameraUiState, modifier: Modifier) {
 
         state.halWarnings.forEach { Mono(it, Color(0xFFFFB300)) }
         state.error?.let { Mono(it, Color(0xFFFF4438)) }
-        state.lastSaved?.let { Mono("saved  $it", Color(0xFF69D26E)) }
+        var showSaved by remember { mutableStateOf(false) }
+        androidx.compose.runtime.LaunchedEffect(state.lastSaved) {
+            showSaved = state.lastSaved != null
+            if (showSaved) { kotlinx.coroutines.delay(3000); showSaved = false }
+        }
+        if (showSaved && !state.recording) Mono("Saved to Movies / LogCam", Color.White)
     }
 }
 
@@ -277,37 +253,52 @@ private fun ControlDeck(
     landscape: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surfaceContainer) {
+    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surface) {
         Column(
-            Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(bottom = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
-            // Only the open panel is drawn, so the deck stays short and the record button never
-            // scrolls out of reach.
-            // A fixed height for the panel area, so opening or closing a tool does not shove the
-            // rail and the record button up and down the screen mid-shot.
-            // Height is reserved only while a tool is open, so a closed deck does not leave a band
-            // of empty surface eating the picture.
-            if (panel != Panel.NONE) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(if (landscape) 156.dp else 120.dp)
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                ) {
+            Row(
+                Modifier.fillMaxWidth().height(72.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("4K / 30", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (state.recordingTransitioning) "Processing…"
+                        else if (state.recording) "Recording" else "Ready to record",
+                        color = if (state.recording) Color(0xFFFF4438) else MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                RecordButton(state.recording, !state.recordingTransitioning, viewModel::toggleRecording)
+            }
+            if (landscape) {
+                Box(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 12.dp)) {
+                    if (panel != Panel.NONE) PanelBody(panel, state, viewModel, onPickLut)
+                    else LutSummary(state, onClick = { onPanel(Panel.LUT) })
+                }
+            } else if (panel != Panel.NONE) {
+                Box(Modifier.fillMaxWidth().heightIn(max = 184.dp).verticalScroll(rememberScrollState()).padding(vertical = 12.dp)) {
                     PanelBody(panel, state, viewModel, onPickLut)
                 }
             }
-
             TabRow(state, panel, onPanel, landscape)
         }
     }
 }
 
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun LutSummary(state: CameraUiState, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(onClick = onClick).padding(8.dp)) {
+        Text("MONITOR LUT", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(state.monitorLutName?.removeSuffix(".cube") ?: "Choose a LUT",
+            style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(if (state.monitorLutName != null && state.monitorEnabled) "Preview on · recording stays ungraded" else "Preview off",
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 @Composable
 private fun TabRow(
     state: CameraUiState,
@@ -316,58 +307,35 @@ private fun TabRow(
     landscape: Boolean,
 ) {
     val tabs = listOf(
-        Triple(Panel.PROFILE, Icons.Filled.Tune, state.settings.profile.label),
-        Triple(Panel.LENS, Icons.Filled.CameraAlt, "%.1fx".format(java.util.Locale.US, state.settings.zoomRatio)),
-        Triple(Panel.EXPOSURE, Icons.Filled.Exposure, "%+.1f".format(java.util.Locale.US, state.exposureEv)),
-        Triple(Panel.ISO, Icons.Filled.Speed, state.settings.isoLabel),
-        Triple(Panel.SHUTTER, Icons.Filled.Timer, state.settings.shutterFractionLabel),
-        Triple(Panel.FOCUS, Icons.Filled.CenterFocusWeak, state.settings.focusLabel),
-        Triple(Panel.WB, Icons.Filled.WbSunny, state.settings.whiteBalanceLabel),
-        Triple(Panel.LUT, Icons.Filled.Movie, if (state.monitorLutName != null) "LUT" else "—"),
-        Triple(Panel.QUALITY, Icons.Filled.HighQuality, "${state.settings.bitRateMbps}"),
+        Triple(Panel.ISO, "ISO", state.settings.isoLabel),
+        Triple(Panel.SHUTTER, "Shutter", state.settings.shutterFractionLabel),
+        Triple(Panel.WB, "WB", state.settings.whiteBalanceLabel),
+        Triple(Panel.FOCUS, "Focus", state.settings.focusLabel),
+        Triple(Panel.LENS, "Zoom", "%.1fx".format(java.util.Locale.US, state.settings.zoomRatio)),
+        Triple(Panel.EXPOSURE, "Exposure", "%+.1f EV".format(java.util.Locale.US, state.exposureEv)),
+        Triple(Panel.PROFILE, "Curve", state.settings.profile.label),
+        Triple(Panel.LUT, "LUT", if (state.monitorLutName != null && state.monitorEnabled) "On" else "Off"),
+        Triple(Panel.QUALITY, "Settings", "${state.settings.bitRateMbps} Mbps"),
     )
-
-    // Wraps rather than clipping: nine tabs fit across a portrait phone but not beside a landscape
-    // viewfinder, and a tab that has scrolled off the edge is a control that does not exist.
-    // Beside a landscape viewfinder there is room for proper buttons, so the tabs get a three-wide
-    // grid with real tap targets instead of a cramped strip that has to scroll.
-    // Lutty's tool rail: a plain icon over its current value, with selection shown by tint alone.
-    // Pills and filled circles add shapes that compete with the picture for attention.
-    androidx.compose.foundation.layout.FlowRow(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterHorizontally),
-        maxItemsInEachRow = if (landscape) 3 else 9,
-    ) {
-        tabs.forEach { (id, icon, label) ->
-            val selected = panel == id
-            val tint = if (selected) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant
-            Column(
-                Modifier
-                    .then(if (landscape) Modifier.width(104.dp) else Modifier.weight(1f))
-                    .padding(vertical = if (landscape) 12.dp else 6.dp)
-                    .pointerInput(id) { detectTapGestures { onPanel(id) } },
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Icon(
-                    icon,
-                    contentDescription = label,
-                    tint = tint,
-                    modifier = Modifier.size(if (landscape) 34.dp else 26.dp),
-                )
-                Spacer(Modifier.height(4.dp))
-                // Nine tabs across a phone leave roughly 47dp each, so the label has to be told
-                // what to do when it does not fit. Without this it ran under its neighbours.
-                Text(
-                    label,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = tint,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+    val columns = if (landscape) 3 else 5
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        tabs.chunked(columns).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                row.forEach { (id, label, value) ->
+                    val selected = panel == id
+                    Column(
+                        Modifier.weight(1f).height(54.dp).clip(RoundedCornerShape(8.dp))
+                            .background(if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent)
+                            .clickable(role = Role.Button, onClick = { onPanel(id) })
+                            .padding(horizontal = 4.dp, vertical = 7.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(value, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
@@ -403,6 +371,7 @@ private fun ValueSlider(
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun PanelBody(
     panel: Panel,
@@ -424,7 +393,7 @@ private fun PanelBody(
         Panel.NONE -> Unit
 
         Panel.PROFILE -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val offered =
                     if (capabilities?.supportsLogRecording == true) RecordingProfile.entries
                     else RecordingProfile.fallback
@@ -432,7 +401,7 @@ private fun PanelBody(
                     FilterChip(
                         selected = settings.profile == profile,
                         onClick = { viewModel.setProfile(profile) },
-                        enabled = !state.recording,
+                        enabled = !state.recording && !state.recordingTransitioning,
                         label = { Text(profile.label, style = MaterialTheme.typography.labelSmall) },
                     )
                 }
@@ -508,7 +477,7 @@ private fun PanelBody(
             readout = settings.focusLabel,
             isAuto = settings.focusDiopters == null,
             onToggleAuto = {
-                viewModel.update { it.copy(focusDiopters = if (it.focusDiopters == null) 0f else null) }
+                viewModel.update { it.copy(focusDiopters = if (it.focusDiopters == null) 0f else null, meterPoint = null) }
             },
             value = settings.focusDiopters ?: 0f,
             range = 0f..10f,
@@ -539,7 +508,7 @@ private fun PanelBody(
 
         Panel.LUT -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                "Preview only. Choose a LUT for the selected curve; no automatic input conversion.",
+                "Preview only · your recording stays ungraded.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.labelSmall,
             )
@@ -564,13 +533,14 @@ private fun PanelBody(
                     enabled = !state.recording && !state.recordingTransitioning,
                     label = { Text("Load .cube", style = MaterialTheme.typography.labelSmall) },
                 )
-                Text(
-                    state.monitorLutName ?: "none",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                )
             }
+            Text(
+                state.monitorLutName?.removeSuffix(".cube") ?: "No LUT selected",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
             state.monitorError?.let {
                 Text(
                     it,
@@ -637,7 +607,7 @@ private fun AutoSlider(
                 selected = isAuto,
                 onClick = onToggleAuto,
                 label = { Text("AUTO", style = MaterialTheme.typography.labelSmall) },
-                modifier = Modifier.height(30.dp),
+                modifier = Modifier.heightIn(min = 48.dp),
             )
         }
         Spacer(Modifier.height(2.dp))
@@ -655,10 +625,9 @@ private fun RecordButton(
     Box(
         modifier
             .size(62.dp)
-            .background(Color.Transparent, CircleShape)
-            .pointerInput(enabled) {
-                if (enabled) detectTapGestures { onClick() }
-            },
+            .clip(CircleShape)
+            .semantics { contentDescription = if (recording) "Stop recording" else "Start recording" }
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxSize()) {
@@ -668,7 +637,7 @@ private fun RecordButton(
             Modifier
                 .size(if (recording) 24.dp else 48.dp)
                 .background(
-                    Color(0xFFFF4438),
+                    if (enabled) Color(0xFFFF4438) else Color(0xFF70312D),
                     if (recording) RoundedCornerShape(6.dp) else CircleShape,
                 ),
         )
@@ -692,7 +661,7 @@ private fun AutoManualSlider(
             selected = value == null,
             onClick = { onChange(if (value == null) range.start else null) },
             label = { Text("AUTO", style = MaterialTheme.typography.labelSmall) },
-            modifier = Modifier.height(30.dp),
+            modifier = Modifier.heightIn(min = 48.dp),
         )
         Spacer(Modifier.width(10.dp))
         SlimSlider(

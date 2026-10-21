@@ -28,6 +28,10 @@ class CameraSession(
     private val capabilities: CameraCapabilities,
 ) {
 
+    @Volatile var reportedAfState: Int? = null
+        private set
+    @Volatile private var distortionMode: Int? = null
+
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var thread: HandlerThread? = null
@@ -173,7 +177,7 @@ class CameraSession(
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(configured: CameraCaptureSession) {
                     session = configured
-                    applySettings(settings)
+                    applySettings(settings, triggerFocus = settings.meterPoint != null)
                     onReady()
                 }
 
@@ -187,7 +191,7 @@ class CameraSession(
     }
 
     /** Pushes a new repeating request. Cheap; safe to call on every slider move. */
-    fun applySettings(settings: CaptureSettings) {
+    fun applySettings(settings: CaptureSettings, triggerFocus: Boolean = false) {
         if (settings.kelvin != this.settings.kelvin || settings.tint != this.settings.tint) {
             // A new profile or white balance means the previous colour matrix no longer describes
             // what the HAL would have chosen, so let it re-derive one.
@@ -209,7 +213,15 @@ class CameraSession(
         }
 
         runCatching {
+            request.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
             active.setRepeatingRequest(request.build(), resultCallback, handler)
+            if (triggerFocus && CameraMetadata.CONTROL_AF_MODE_AUTO in capabilities.autoFocusModes) {
+                reportedAfState = CameraMetadata.CONTROL_AF_STATE_ACTIVE_SCAN
+                request.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
+                active.capture(request.build(), resultCallback, handler)
+                request.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+                active.capture(request.build(), resultCallback, handler)
+            }
         }.onFailure { Log.e(TAG, "failed to set repeating request", it) }
     }
 
@@ -312,11 +324,13 @@ class CameraSession(
         // A tapped point drives both auto-exposure and autofocus, which is what every camera app
         // does and what makes "expose for that" a single gesture.
         val point = s.meterPoint
-        val array = capabilities.activeArray
-        if (point != null && array != null && capabilities.maxMeteringRegions > 0) {
+        val array = if (distortionMode == CameraMetadata.DISTORTION_CORRECTION_MODE_OFF)
+            capabilities.preCorrectionArray ?: capabilities.activeArray else capabilities.activeArray
+        if (point != null && array != null) {
             val region = meteringRegion(point, array)
-            request.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
-            if (s.focusDiopters == null) {
+            if (capabilities.maxMeteringRegions > 0 && s.autoExposure)
+                request.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
+            if (s.focusDiopters == null && capabilities.maxFocusRegions > 0) {
                 request.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
             }
         }
@@ -350,7 +364,11 @@ class CameraSession(
         } else {
             request.set(
                 CaptureRequest.CONTROL_AF_MODE,
-                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
+                if (s.meterPoint != null && CameraMetadata.CONTROL_AF_MODE_AUTO in capabilities.autoFocusModes)
+                    CameraMetadata.CONTROL_AF_MODE_AUTO
+                else if (CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO in capabilities.autoFocusModes)
+                    CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                else CameraMetadata.CONTROL_AF_MODE_OFF,
             )
         }
 
@@ -374,6 +392,8 @@ class CameraSession(
             request: CaptureRequest,
             result: TotalCaptureResult,
         ) {
+            reportedAfState = result.get(TotalCaptureResult.CONTROL_AF_STATE)
+            distortionMode = result.get(TotalCaptureResult.DISTORTION_CORRECTION_MODE)
             reportedIso = result.get(TotalCaptureResult.SENSOR_SENSITIVITY)
             reportedExposureNs = result.get(TotalCaptureResult.SENSOR_EXPOSURE_TIME)
             reportedFocusDiopters = result.get(TotalCaptureResult.LENS_FOCUS_DISTANCE)
@@ -473,15 +493,9 @@ class CameraSession(
         point: Pair<Float, Float>,
         array: android.graphics.Rect,
     ): android.hardware.camera2.params.MeteringRectangle {
-        val halfW = (array.width() * METER_FRACTION / 2).toInt()
-        val halfH = (array.height() * METER_FRACTION / 2).toInt()
-        val cx = array.left + (point.first.coerceIn(0f, 1f) * array.width()).toInt()
-        val cy = array.top + (point.second.coerceIn(0f, 1f) * array.height()).toInt()
+        val r = TouchMetering.region(point.first, point.second, array.left, array.top, array.width(), array.height())
         return android.hardware.camera2.params.MeteringRectangle(
-            (cx - halfW).coerceIn(array.left, array.right - 1),
-            (cy - halfH).coerceIn(array.top, array.bottom - 1),
-            (halfW * 2).coerceAtLeast(1),
-            (halfH * 2).coerceAtLeast(1),
+            r.left, r.top, r.width, r.height,
             android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX,
         )
     }

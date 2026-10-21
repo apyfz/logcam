@@ -132,6 +132,12 @@ class MonitorRenderer(
         }
     }
 
+    @Volatile private var touchPreview: com.apyfz.logcam.camera.TouchMetering.Preview? = null
+
+    fun sensorPoint(x: Float, y: Float): Pair<Float, Float>? = touchPreview?.let {
+        com.apyfz.logcam.camera.TouchMetering.map(x, y, it)
+    }
+
     private var viewWidth = 1
     private var viewHeight = 1
 
@@ -213,6 +219,9 @@ class MonitorRenderer(
         )
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLutSize"), lutSize.toFloat())
         val fit = fitScale()
+        touchPreview = com.apyfz.logcam.camera.TouchMetering.Preview(
+            viewWidth, viewHeight, rotationDegrees, fit[0], fit[1], combined.copyOf(),
+        )
         GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uFit"), fit[0], fit[1])
 
         val position = GLES20.glGetAttribLocation(program, "aPosition")

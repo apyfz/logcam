@@ -81,3 +81,25 @@ scene. These differences and the distinct input curves prevent a calibrated qual
 Apple Log LUTs are applied directly for appearance comparison, not a verified Honor Log conversion.
 The hidden stock camera ID is a future investigation lead; camera0 vendor-tag probes do not
 establish equivalence to the stock Pro LOG pipeline.
+
+## Touch focus and exposure — 2026-10-21
+
+The viewfinder accepts taps inside the displayed image, maps them through the renderer's actual
+rotation/fit/texture transform, and submits separate supported AF/AE regions. A tap switches
+manual focus to AUTO and sends a single cancel/start sequence; normal repeating requests remain
+IDLE. Focus feedback uses capture-result AF state, including failure rather than assuming success.
+Region bounds account for the 16:9 stream crop and stay inside the sensor coordinate array.
+
+Drag vertically after a tap, or use the adjacent plus/minus buttons. Auto exposure adjusts EV;
+manual exposure adjusts ISO in third-stop increments without changing shutter. Both use device
+limits. The native frame and recording are not altered by the marker or controls.
+
+Device checks: AF reported FOCUSED_LOCKED after tapping; auto exposure drag requested -6
+compensation units (-1 EV), and reported ISO fell from622 to232 in the scene. In manual mode,
+drag changed ISO200 to159 with exposure still6250000ns (1/160). During recording, another drag
+changed requested ISO to318; a dark-scene AF failure displayed "Try again". The take saved as
+`LogCam_20261021-185806_APPLE_LOG.mp4`. Evidence is under research `touch-validation/`.
+
+38 JVM tests, assembleDebug and lintDebug pass. Mapping tests cover all four rotations,
+letterboxing, texture crop and edge bounds. Physical portrait interaction remains unverified.
+Camera2 coordinate/trigger reference: https://developer.android.com/reference/android/hardware/camera2/CaptureRequest

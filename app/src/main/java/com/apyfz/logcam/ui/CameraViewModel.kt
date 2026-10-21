@@ -35,6 +35,7 @@ data class CameraUiState(
     val lastSaved: String? = null,
     val error: String? = null,
     val reportedIso: Int? = null,
+    val reportedAfState: Int? = null,
     val reportedExposureNs: Long? = null,
     val tonemapConfirmed: Boolean? = null,
     val edgeConfirmed: Boolean? = null,
@@ -267,6 +268,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(
                         reportedIso = camera.reportedIso,
+                        reportedAfState = camera.reportedAfState,
                         reportedExposureNs = camera.reportedExposureNs,
                         tonemapConfirmed = camera.tonemapConfirmed,
                         edgeConfirmed = camera.edgeConfirmed,
@@ -296,19 +298,27 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
         session?.requestDiagnostics()
     }
 
-    /** Meters and focuses on a point, given in preview-relative coordinates 0..1. */
+    /** A tap explicitly hands focus back to AF without changing manual exposure. */
     fun meterAt(x: Float, y: Float) {
-        update { it.copy(meterPoint = x to y) }
+        val next = _state.value.settings.copy(meterPoint = x to y, focusDiopters = null)
+        _state.update { it.copy(settings = next, seeded = true, reportedAfState = null) }
+        session?.applySettings(next, triggerFocus = true)
     }
 
-    /** Moves auto-exposure compensation by one step, clamped to what the device supports. */
-    fun nudgeExposure(steps: Int) {
-        val range = _state.value.capabilities?.exposureRange ?: return
-        update {
-            it.copy(
-                exposureCompensation =
-                    (it.exposureCompensation + steps).coerceIn(range.lower, range.upper),
-            )
+    /** Auto exposure uses compensation; manual exposure changes ISO and preserves shutter. */
+    fun nudgeExposure(direction: Int) {
+        val caps = _state.value.capabilities ?: return
+        update { s ->
+            if (s.autoExposure) {
+                val range = caps.exposureRange
+                if (range == null) s else s.copy(exposureCompensation =
+                    (s.exposureCompensation + direction).coerceIn(range.lower, range.upper))
+            } else {
+                val range = caps.isoRange
+                if (range == null) s else s.copy(iso =
+                    kotlin.math.round((s.iso ?: range.lower) * Math.pow(2.0, direction / 3.0))
+                        .toInt().coerceIn(range.lower, range.upper))
+            }
         }
     }
 
