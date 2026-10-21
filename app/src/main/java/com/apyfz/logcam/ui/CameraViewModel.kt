@@ -2,6 +2,7 @@ package com.apyfz.logcam.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.hardware.camera2.CameraManager
 import android.util.Log
 import android.util.Size
@@ -60,12 +61,12 @@ data class CameraUiState(
     val halWarnings: List<String>
         get() = buildList {
             if (tonemapConfirmed == false) {
-                add("HAL ignored the custom tonemap curve — this is not a real log recording")
+                add("Camera did not confirm the custom curve")
             }
             if (edgeConfirmed == false) add("HAL ignored EDGE_MODE_OFF — sharpening is still applied")
             if (noiseReductionConfirmed == false) add("HAL ignored NOISE_REDUCTION_MODE_OFF")
             if (colorKilledByCurve) {
-                add("This phone drops all colour when a custom curve is used — recording will be black and white. Use HLG10.")
+                add("Camera reports a grayscale colour transform. Stop and check the recorded clip.")
             }
         }
 }
@@ -82,6 +83,50 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     private var recorder: HevcRecorder? = null
     private var output: VideoOutput? = null
     private var previewSurface: Surface? = null
+    private var foreground = true
+    private var statusJob: kotlinx.coroutines.Job? = null
+    private var seedJob: kotlinx.coroutines.Job? = null
+
+    /** Fixed launch preset for a controlled stock-camera comparison; recording remains manual. */
+    fun prepareComparisonCapture(iso: Int = 100) {
+        if (getApplication<Application>().applicationInfo.flags and
+            ApplicationInfo.FLAG_DEBUGGABLE == 0 || session != null
+        ) return
+        _state.update {
+            it.copy(
+                settings = it.settings.copy(
+                    profile = RecordingProfile.APPLE_LOG,
+                    iso = iso.takeIf { value -> value in 50..12800 } ?: 100,
+                    exposureTimeNs = 6_250_000L,
+                    focusDiopters = null,
+                    kelvin = null,
+                    edgeOff = true,
+                    noiseReductionOff = false,
+                    stabilisation = false,
+                ),
+                seeded = true,
+            )
+        }
+    }
+
+    fun pausePreview() {
+        foreground = false
+        if (recordingPhase.get() == RecordingPhase.RECORDING) stopRecording()
+        if (recordingPhase.get() == RecordingPhase.IDLE) releaseCamera()
+    }
+
+    fun resumePreview() {
+        foreground = true
+        previewSurface?.let { start(it) }
+    }
+
+    private fun releaseCamera() {
+        statusJob?.cancel()
+        seedJob?.cancel()
+        session?.close()
+        session = null
+    }
+
     private val recordingPhase = AtomicReference(RecordingPhase.IDLE)
 
     /**
@@ -109,7 +154,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
      * nobody is showing, which looks exactly like a dead preview.
      */
     fun start(preview: Surface) {
-        if (preview == previewSurface) return
+        if (!foreground) { previewSurface = preview; return }
+        if (preview == previewSurface && session != null) return
 
         val existing = session
         if (existing != null) {
@@ -206,12 +252,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun onSessionReady() {
-        viewModelScope.launch {
+        seedJob?.cancel()
+        statusJob?.cancel()
+        seedJob = viewModelScope.launch {
             // Let 3A settle before adopting its values; the first results are still converging.
             delay(SEED_DELAY_MS)
             seedManualControls()
         }
-        viewModelScope.launch {
+        statusJob = viewModelScope.launch {
             // Capture results arrive continuously; polling them into the UI at a human rate keeps
             // recomposition cheap while still surfacing a HAL disagreement within a second.
             while (true) {
@@ -277,9 +325,19 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
      * Parsed off the main thread because a 65-cube is 274k lines, and validated by parsing rather
      * than by file extension.
      */
+    init {
+        val saved = getApplication<Application>().getSharedPreferences("monitor", Context.MODE_PRIVATE)
+            .getString("uri", null)
+        if (saved != null) loadMonitorLut(android.net.Uri.parse(saved))
+    }
+
     fun loadMonitorLut(uri: android.net.Uri) {
         viewModelScope.launch(Dispatchers.IO) {
-            val name = uri.lastPathSegment?.substringAfterLast('/') ?: "LUT"
+            val resolver = getApplication<Application>().contentResolver
+            val name = runCatching {
+                resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                    ?.use { if (it.moveToFirst()) it.getString(0) else null }
+            }.getOrNull() ?: "Monitoring LUT"
             val result = runCatching {
                 getApplication<Application>().contentResolver.openInputStream(uri)?.use {
                     com.apyfz.logcam.color.CubeParser.parse(it)
@@ -288,6 +346,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
 
             when (result) {
                 is com.apyfz.logcam.color.CubeResult.Ok -> {
+                    runCatching {
+                        resolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }.onSuccess {
+                        getApplication<Application>().getSharedPreferences("monitor", Context.MODE_PRIVATE)
+                            .edit().putString("uri", uri.toString()).apply()
+                    }
                     monitor.setLut(result.lut)
                     monitor.enabled = true
                     _state.update {
@@ -395,6 +459,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
                                         error = null,
                                     )
                                 }
+                                if (!foreground) stopRecording()
                             }
                         },
                         onError = { message ->
@@ -460,7 +525,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
             // a released surface.
             val preview = previewSurface ?: return@launch
             withContext(Dispatchers.Main) {
-                session?.configure(preview, null, _state.value.settings, {}, ::fail)
+                if (foreground) session?.configure(preview, null, _state.value.settings, {}, ::fail)
+                else releaseCamera()
             }
         }
     }
@@ -473,7 +539,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app) {
      * produces a file that plays back on its side.
      */
     private fun orientationHint(sensorOrientation: Int): Int =
-        (sensorOrientation + displayRotation) % 360
+        (sensorOrientation - displayRotation + 360) % 360
 
     private fun fail(message: String) {
         Log.e(TAG, message)

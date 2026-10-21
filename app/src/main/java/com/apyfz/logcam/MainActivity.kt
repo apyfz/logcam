@@ -1,9 +1,11 @@
 package com.apyfz.logcam
 
 import android.Manifest
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.WindowManager
+import androidx.activity.viewModels
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,6 +33,18 @@ import com.apyfz.logcam.ui.LogCamTheme
 import com.apyfz.logcam.ui.CameraViewModel
 
 class MainActivity : ComponentActivity() {
+    private val cameraViewModel: CameraViewModel by viewModels()
+
+    override fun onStart() {
+        super.onStart()
+        cameraViewModel.resumePreview()
+    }
+
+    override fun onStop() {
+        cameraViewModel.pausePreview()
+        super.onStop()
+    }
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,6 +70,15 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        if (savedInstanceState == null &&
+            applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 &&
+            intent.getBooleanExtra("comparison", false)
+        ) {
+            cameraViewModel.prepareComparisonCapture(
+                iso = intent.getIntExtra("comparison_iso", 100),
+            )
+        }
+
         setContent {
             LogCamTheme {
                 var granted by remember { mutableStateOf(hasPermissions()) }
@@ -65,7 +88,7 @@ class MainActivity : ComponentActivity() {
                 ) { result -> granted = result.values.all { it } }
 
                 if (granted) {
-                    CameraScreen(viewModel = viewModel<CameraViewModel>())
+                    CameraScreen(viewModel = cameraViewModel)
                 } else {
                     PermissionPrompt { request.launch(REQUIRED) }
                 }

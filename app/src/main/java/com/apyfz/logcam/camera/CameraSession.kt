@@ -55,8 +55,8 @@ class CameraSession(
      * Whether the HAL confirmed it applied the tonemap curve we sent.
      *
      * It is legal for a HAL to accept CONTRAST_CURVE and quietly do something else. Reading the
-     * mode back out of the capture result is the only way to know the log profile is real, so the
-     * UI surfaces this rather than assuming success.
+     * mode back out of the capture result checks request acceptance. Pixels and calibration
+     * are still needed to establish the actual transfer response.
      */
     @Volatile
     var tonemapConfirmed: Boolean? = null
@@ -84,10 +84,8 @@ class CameraSession(
     /**
      * The colour correction the HAL computed for itself under auto white balance.
      *
-     * Switching the tonemap to CONTRAST_CURVE puts this HAL's colour pipeline into its manual path,
-     * where it stops supplying a colour matrix of its own and the picture comes out monochrome.
-     * Reading its auto-derived transform and gains out of the capture result and handing them
-     * straight back keeps the device's own colour science while we take over only the curve.
+     * Retained only for manual white balance. MagicOS11's tested custom256 path works with
+     * automatic colour correction; forcing a harvested transform there is unnecessary.
      */
     @Volatile
     private var halColorTransform: android.hardware.camera2.params.ColorSpaceTransform? = null
@@ -190,10 +188,12 @@ class CameraSession(
 
     /** Pushes a new repeating request. Cheap; safe to call on every slider move. */
     fun applySettings(settings: CaptureSettings) {
-        if (settings.profile != this.settings.profile) {
+        if (settings.kelvin != this.settings.kelvin || settings.tint != this.settings.tint) {
             // A new profile or white balance means the previous colour matrix no longer describes
             // what the HAL would have chosen, so let it re-derive one.
             colorFedBack = false
+            halColorTransform = null
+            halColorGains = null
         }
         this.settings = settings
         val camera = device ?: return
@@ -227,8 +227,7 @@ class CameraSession(
         request.set(CaptureRequest.CONTROL_ZOOM_RATIO, s.zoomRatio)
 
         // ---- Sharpening and noise reduction ----------------------------------
-        // The two stages that bake "processed" into a picture. Turning them off is what separates
-        // this from the stock camera's log mode.
+        // These standard controls request reduced processing. Vendor sharpening/NR may remain.
         if (capabilities.supportsEdgeOff) {
             request.set(
                 CaptureRequest.EDGE_MODE,
@@ -244,10 +243,9 @@ class CameraSession(
         }
 
         // ---- Transfer curve --------------------------------------------------
-        // Until a usable colour matrix has been harvested, run the HAL's own tonemap so it has a
-        // reason to compute one. Costs a fraction of a second at session start and is the only way
-        // to obtain this device's colour science for the manual path.
-        val harvesting = s.profile.usesCustomCurve &&
+        // Manual white balance needs a starting transform. Automatic WB follows the tested
+        // custom256 request directly, without substituting a harvested matrix.
+        val harvesting = s.kelvin != null && s.profile.usesCustomCurve &&
             capabilities.supportsColorTransform &&
             halColorTransform == null
 
@@ -267,7 +265,7 @@ class CameraSession(
         // ---- Colour correction ----------------------------------------------
         // Only needed on the manual-tonemap path; under HIGH_QUALITY tonemap the HAL manages this
         // itself and overriding it would discard its tuning for no gain.
-        if (curve != null && capabilities.supportsColorTransform) {
+        if (s.kelvin != null && curve != null && capabilities.supportsColorTransform) {
             val transform = halColorTransform
             val gains = halColorGains
             if (transform != null && gains != null) {
@@ -382,7 +380,8 @@ class CameraSession(
 
             // Only a curve that was actually sent can be confirmed. During the colour-harvest pass
             // no curve has gone out yet, and reporting that as a failure would cry wolf.
-            tonemapConfirmed = if (!curveSent) null else
+            val requestHasCurve = request.get(CaptureRequest.TONEMAP_CURVE) != null
+            tonemapConfirmed = if (!requestHasCurve) null else
                 result.get(TotalCaptureResult.TONEMAP_MODE) ==
                     CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE
 
@@ -393,7 +392,7 @@ class CameraSession(
                 result.get(TotalCaptureResult.NOISE_REDUCTION_MODE) ==
                     CameraMetadata.NOISE_REDUCTION_MODE_OFF
 
-            captureColorCorrection(result)
+            captureColorCorrection(result, requestHasCurve)
             // Requests already in flight when the settings changed still carry the old values, so
             // the first frames after a change describe the previous profile. Skip them.
             if (debugSkip > 0) debugSkip-- else if (debugFrames-- > 0) dumpResult(result)
@@ -417,7 +416,7 @@ class CameraSession(
         fun <T> show(key: android.hardware.camera2.CaptureResult.Key<T>) =
             "${key.name.substringAfterLast('.')}=${result.get(key)}"
 
-        val line = ("HALSTATE profile=${settings.profile.name} " +
+        val line = ("HALSTATE profile=${settings.profile.name} points=${capabilities.maxCurvePoints} " +
                 show(TotalCaptureResult.TONEMAP_MODE) + " " +
                 show(TotalCaptureResult.EDGE_MODE) + " " +
                 show(TotalCaptureResult.NOISE_REDUCTION_MODE) + " " +
@@ -441,7 +440,7 @@ class CameraSession(
      * Only fires on the manual-tonemap path, and only once per settings change, because
      * re-submitting a repeating request on every frame would thrash the pipeline.
      */
-    private fun captureColorCorrection(result: TotalCaptureResult) {
+    private fun captureColorCorrection(result: TotalCaptureResult, requestHasCurve: Boolean) {
         val transform = result.get(TotalCaptureResult.COLOR_CORRECTION_TRANSFORM) ?: return
         val gains = result.get(TotalCaptureResult.COLOR_CORRECTION_GAINS) ?: return
 
@@ -450,14 +449,14 @@ class CameraSession(
         // back in permanently.
         // A greyscale matrix arriving while our curve is active is the HAL overriding colour. It is
         // detectable here, so the app can say so instead of quietly recording black and white.
-        colorKilledByCurve = curveSent && isGreyscale(transform)
+        colorKilledByCurve = requestHasCurve && isGreyscale(transform)
 
         if (isDerived(result) && !isGreyscale(transform)) {
             halColorTransform = transform
             halColorGains = gains
         }
 
-        val needsFeedback = settings.profile.usesCustomCurve && capabilities.supportsColorTransform
+        val needsFeedback = settings.kelvin != null && settings.profile.usesCustomCurve && capabilities.supportsColorTransform
         if (needsFeedback && !colorFedBack && halColorTransform != null) {
             colorFedBack = true
             handler?.post { applySettings(settings) }

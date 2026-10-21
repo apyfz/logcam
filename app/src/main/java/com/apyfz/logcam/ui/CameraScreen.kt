@@ -539,7 +539,7 @@ private fun PanelBody(
 
         Panel.LUT -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                "Monitoring only. The recording stays untouched log.",
+                "Preview only. Choose a LUT for the selected curve; no automatic input conversion.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.labelSmall,
             )
@@ -561,6 +561,7 @@ private fun PanelBody(
                 FilterChip(
                     selected = false,
                     onClick = onPickLut,
+                    enabled = !state.recording && !state.recordingTransitioning,
                     label = { Text("Load .cube", style = MaterialTheme.typography.labelSmall) },
                 )
                 Text(

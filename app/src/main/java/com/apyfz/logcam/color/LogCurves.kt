@@ -25,19 +25,13 @@ object LogCurves {
     /** Scene reflectance at which O-Log encode reaches 1.0, per the white paper (section 3.1). */
     const val O_LOG_CLIP_REFLECTANCE: Double = 16.0
 
-    /**
-     * Apple Log 1 transfer curve.
-     *
-     * Apple Log 1 uses BT.2020 primaries, which is also what the camera's BT2020 colour space
-     * profile delivers, so pairing this curve with a BT.2020 request needs no gamut matrix. The
-     * output is Apple Log in the strict sense, not an approximation of it.
-     */
+    /** Apple Log-shaped samples. Camera input normalization and gamut need calibration. */
     fun appleLog(points: Int): FloatArray = curve(points) { linear ->
         ColorProfiles.appleLogEncode(linear * APPLE_LOG_CLIP_REFLECTANCE)
     }
 
     /**
-     * O-Log transfer curve, for footage that should cut with the Find X8 Ultra.
+     * O-Log-shaped samples; this does not reproduce an OPPO camera colour pipeline.
      *
      * O-Log's floor is not zero: encode(0) is 0.0631, which is 10-bit code 64. That lifted black is
      * the documented behaviour of the curve, and is how an O-Log file is told apart from a Rec.709

@@ -45,9 +45,9 @@ data class CameraCapabilities(
     val isLevel3: Boolean
         get() = hardwareLevel == CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_3
 
-    /** True when a genuine log recording is possible: custom curve, no sharpening, 10-bit. */
+    /** True when a custom curve can be requested. Encoder negotiation and pixels need verification. */
     val supportsLogRecording: Boolean
-        get() = supportsContrastCurve && supportsManualPostProcessing && tenBitProfiles.isNotEmpty()
+        get() = supportsContrastCurve && supportsManualPostProcessing && maxCurvePoints >= 2
 
     /**
      * Why log recording is unavailable, or null when it is. Shown to the user verbatim; a vague
@@ -56,7 +56,7 @@ data class CameraCapabilities(
     fun logUnavailableReason(): String? = when {
         !supportsManualPostProcessing -> "HAL does not advertise MANUAL_POST_PROCESSING"
         !supportsContrastCurve -> "HAL does not offer TONEMAP_MODE_CONTRAST_CURVE"
-        tenBitProfiles.isEmpty() -> "HAL exposes no 10-bit dynamic range profile"
+        maxCurvePoints < 2 -> "HAL exposes too few tonemap curve points"
         else -> null
     }
 
@@ -128,22 +128,10 @@ data class CameraCapabilities(
             )
         }
 
-        /**
-         * The largest tonemap curve the hardware will actually accept, which is not what it says.
-         *
-         * The Honor Magic 8 Pro advertises TONEMAP_MAX_CURVE_POINTS = 512 and accepts a 512-point
-         * curve without error, reporting TONEMAP_MODE=0 back. But measured across a sweep, 256
-         * points records in full colour and 260 records pure greyscale — the tonemap LUT overruns
-         * into the colour-correction registers, which is why the reported COLOR_CORRECTION_TRANSFORM
-         * turns into a degenerate all-rows-equal matrix that no request can override.
-         *
-         * 256 points costs nothing worth having: sampled against the analytic Apple Log curve the
-         * worst interpolation error is under half a 10-bit code value.
-         */
-        private const val SAFE_CURVE_POINTS = 256
-
+        // Advertised512 on MagicOS11, but258+ produces neutral chroma. The cause below
+        // Camera2 is unproven. Uniform256-point sampling also has shadow interpolation error.
         private fun usableCurvePoints(advertised: Int): Int =
-            if (advertised <= 0) 0 else minOf(advertised, SAFE_CURVE_POINTS)
+            advertised.coerceIn(0, RecordingProfile.SAFE_CURVE_POINTS)
 
         /** Camera2 hands these back as rationals; the maths wants plain doubles. */
         private fun android.hardware.camera2.params.ColorSpaceTransform.toMatrix() =

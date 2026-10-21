@@ -7,7 +7,6 @@ import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.util.Log
 import android.view.Surface
-import com.apyfz.logcam.color.ColorProfiles
 import com.apyfz.logcam.color.LutData
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -22,16 +21,8 @@ import javax.microedition.khronos.opengles.GL10
  * fed straight from the ISP and never sees any of this. Framing a log image is otherwise guesswork,
  * because the flat picture on screen is not what the footage will look like graded.
  *
- * The chain matches how the footage will actually be handled downstream:
- *
- *     Apple Log 1 (as recorded, BT.2020)
- *       -> scene linear
- *       -> BT.2020 to Apple Wide Gamut
- *       -> Apple Log 2
- *       -> the user's Apple Log 2 LUT
- *
- * Apple Log 1 and 2 share a transfer curve and differ only in gamut, so the conversion is the gamut
- * matrix alone — the same one verified in [ColorProfiles].
+ * Samples a supplied .cube directly in the selected profile's preview space. There is no
+ * implicit Apple Log decode, gamut conversion, or guarantee that the LUT matches this camera.
  */
 class MonitorRenderer(
     private val onSurfaceReady: (Surface) -> Unit,
@@ -264,8 +255,6 @@ class MonitorRenderer(
     }
 
     private fun buildProgram(): Int {
-        val m = ColorProfiles.BT2020_TO_APPLE_WIDE_GAMUT
-        val matrix = (0..8).joinToString(", ") { "%.10f".format(java.util.Locale.US, m[it]) }
 
         val fragment = """
             #version 300 es
@@ -280,29 +269,6 @@ class MonitorRenderer(
             in vec2 vTex;
             out vec4 outColor;
 
-            // Apple Log, constants from OpenColorIO AppleCameras.cpp.
-            const float A_R0 = -0.05641088;
-            const float A_RT = 0.01;
-            const float A_C = 47.28711236;
-            const float A_BETA = 0.00964052;
-            const float A_GAMMA = 0.08550479;
-            const float A_DELTA = 0.69336945;
-            const float A_PT = 0.20855531595464202;
-
-            float appleDecode(float p) {
-              if (p >= A_PT) return exp2((p - A_DELTA) / A_GAMMA) - A_BETA;
-              if (p >= 0.0)  return sqrt(p / A_C) + A_R0;
-              return A_R0;
-            }
-            float appleEncode(float r) {
-              if (r >= A_RT) return A_GAMMA * (log(r + A_BETA) / log(2.0)) + A_DELTA;
-              if (r >= A_R0) return A_C * (r - A_R0) * (r - A_R0);
-              return 0.0;
-            }
-
-            // BT.2020 to Apple Wide Gamut, row-major in the source, transposed for GLSL.
-            const mat3 TO_AWG = mat3($matrix);
-
             vec3 sampleLut(vec3 c) {
               // Texel-centre offsets, so the endpoints of the cube land exactly rather than being
               // pulled inward by half a texel.
@@ -314,12 +280,9 @@ class MonitorRenderer(
               vec3 c = texture(uCamera, vTex).rgb;
 
               if (uLutEnabled == 1) {
-                // Apple Log 1 to Apple Log 2: same curve, different gamut, so decode, rotate the
-                // primaries and re-encode.
-                vec3 lin = vec3(appleDecode(c.r), appleDecode(c.g), appleDecode(c.b));
-                lin = transpose(TO_AWG) * lin;
-                vec3 al2 = vec3(appleEncode(lin.r), appleEncode(lin.g), appleEncode(lin.b));
-                c = sampleLut(al2);
+                // A .cube declares no reliable camera input profile. Apply it directly to the
+                // selected capture's preview samples, without an invented gamut conversion.
+                c = sampleLut(c);
               }
 
               outColor = vec4(c, 1.0);

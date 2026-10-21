@@ -1,16 +1,33 @@
 # LogCam
 
-A manual video camera for Android that records real log footage — Apple Log, O-Log or HLG —
-with the ISP's sharpening and noise reduction switched off, so the file is something you grade
-rather than something already graded for you.
+Manual Camera2 video recorder with direct HEVC Main10 encoding and preview-only .cube LUTs.
 
-Built for the Honor Magic 8 Pro (`BKQ-N49`). Everything is capability-gated, so it degrades on
-devices that expose less rather than lying about what it recorded.
+The custom modes load Apple Log-shaped or O-Log-shaped tonemap curves into the camera.
+They are experimental: matching a mathematical curve does not establish a calibrated Apple/OPPO
+gamut, sensor dynamic range, or absence of vendor image processing.
 
-- 10-bit HEVC Main10, 4K30, up to 100 Mbps, AAC audio
-- Custom tonemap curves loaded into the ISP (Apple Log 1, O-Log), plus HLG and a linear reference
-- Full manual control: ISO, shutter, focus, white balance in Kelvin, zoom
-- Monitoring LUT in the preview only; the recording stays untouched log
-- Files are written SDR-tagged, so nothing downstream tone-maps them as HDR
+## MagicOS 11 capture path
 
-Colour maths is cross-checked against `colour-science` rather than derived once and trusted.
+On Honor Magic 8 Pro BKQ-N49, firmware11.0.0.120C901E8, a standalone probe verified coloured
+1080p30 Main10 with a256-point custom curve and STANDARD dynamic range. At258 points the same
+pipeline produces grayscale. LogCam caps custom curves at256 and uses STANDARD; HLG is requested
+only when the user selects HLG. Main10 files do not alone prove10-bit sensor precision.
+
+The encoder receives camera frames directly. Preview LUTs sample the preview as supplied, without
+silently decoding Apple Log or rotating assumed primaries. Choose a LUT appropriate to the selected
+curve; exact camera matching still requires calibration.
+
+The output preserves the encoder's actual transfer semantics, including HDR for explicit HLG
+capture. Container colour metadata is reconciled against the encoded HEVC VUI instead of blindly
+relabeling every recording SDR. Standard EDGE/NR OFF requests are available; metadata readback
+cannot establish that all vendor sharpening or noise reduction is disabled.
+
+## Build
+
+Use Android Studio's JBR and Android SDK37:
+
+```sh
+JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+```
+
+Device results and remaining calibration limits are recorded in `docs/magicos11-validation.md`.

@@ -25,10 +25,10 @@ class VideoOutput private constructor(
 
     val fileDescriptor get() = descriptor.fileDescriptor
 
-    /** Publishes the finished take, correcting its colour tags first. */
+    /** Publishes the finished take after reconciling container labels with the encoded stream. */
     fun commit() {
-        // Strip the HDR claim before anyone sees the file. Done while it is still pending, so no
-        // player or gallery ever observes it tagged as HDR.
+        // Match explicit HEVC VUI metadata without relabelling HDR as SDR or claiming a gamut.
+        // Unknown metadata remains unchanged; a metadata failure must not discard a take.
         runCatching { ColrPatcher.patch(descriptor.fileDescriptor) }
         runCatching { descriptor.close() }
         context.contentResolver.update(
